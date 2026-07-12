@@ -76,44 +76,63 @@ def compress_numbers(nums):
     return ", ".join(parts)
 
 
-def adapt_csv(headers, rows, ticket_col=None):
+def adapt_csv(headers, rows, ticket_col=None, start=None, end=None, insert_at=0):
     """Convierte un CSV arbitrario al formato de rifa.
 
     ticket_col: nombre de la columna que contiene el número de boleto, o
-    None para generar los números automáticamente (1, 2, 3, …).
-    Regresa (campos, filas) listos para construir una Rifa.
+    None para generar los números y añadir la columna "Boleto".
+    Al generar: `start`-`end` es el rango de números a asignar (si sobran
+    números respecto a las filas, se crean boletos vacíos) e `insert_at`
+    es la posición donde se inserta la columna (0 = al inicio).
+    Regresa (campos, filas, columnas) listos para construir una Rifa.
     """
     def rename(h):
         # una columna llamada "Boleto" que no sea la elegida chocaría con
         # la columna automática; se conserva con otro nombre
         return f"{h} (original)" if h == TICKET_COL else h
 
-    if ticket_col is None:
-        fields = [rename(h) for h in headers]
-        new_rows = [{TICKET_COL: str(i),
-                     **{rename(h): row.get(h, "") for h in headers}}
-                    for i, row in enumerate(rows, start=1)]
-        return fields, new_rows
+    if ticket_col is not None:
+        fields = [rename(h) for h in headers if h != ticket_col]
+        new_rows = [{TICKET_COL: row.get(ticket_col, ""),
+                     **{rename(h): row.get(h, "")
+                        for h in headers if h != ticket_col}}
+                    for row in rows]
+        try:
+            new_rows.sort(key=lambda r: int(r[TICKET_COL]))
+        except ValueError:
+            pass  # boletos no numéricos: se conserva el orden original
+        return fields, new_rows, [TICKET_COL] + fields
 
-    fields = [rename(h) for h in headers if h != ticket_col]
-    new_rows = [{TICKET_COL: row.get(ticket_col, ""),
-                 **{rename(h): row.get(h, "")
-                    for h in headers if h != ticket_col}}
-                for row in rows]
-    try:
-        new_rows.sort(key=lambda r: int(r[TICKET_COL]))
-    except ValueError:
-        pass  # boletos no numéricos: se conserva el orden original
-    return fields, new_rows
+    fields = [rename(h) for h in headers]
+    if start is None:
+        start = 1
+    if end is None:
+        end = start + max(len(rows), 1) - 1
+    total = end - start + 1
+    if total < len(rows):
+        raise ValueError(
+            f"El rango {start}-{end} solo tiene {total} números y el "
+            f"archivo tiene {len(rows)} filas con datos. Amplía el rango.")
+    new_rows = []
+    for i, n in enumerate(range(start, end + 1)):
+        row = rows[i] if i < len(rows) else {}
+        new_rows.append({TICKET_COL: str(n),
+                         **{rename(h): row.get(h, "") for h in headers}})
+    insert_at = max(0, min(insert_at, len(fields)))
+    columns = fields[:insert_at] + [TICKET_COL] + fields[insert_at:]
+    return fields, new_rows, columns
 
 
 class Rifa:
     """Modelo de datos: una rifa respaldada por un archivo CSV."""
 
-    def __init__(self, path, fields, rows):
+    def __init__(self, path, fields, rows, columns=None):
         self.path = path
         self.fields = fields          # columnas personalizadas (sin "Boleto")
         self.rows = rows              # lista de dicts en orden
+        # orden completo de columnas en el archivo; "Boleto" puede ir en
+        # cualquier posición
+        self.columns = columns or [TICKET_COL] + fields
 
     @property
     def name(self):
@@ -130,12 +149,13 @@ class Rifa:
     @classmethod
     def load(cls, path):
         headers, rows = cls.read_raw(path)
-        if headers[0] != TICKET_COL:
+        if TICKET_COL not in headers:
             raise ValueError(
-                f'El CSV debe tener "{TICKET_COL}" como primera columna. '
+                f'El CSV no tiene una columna "{TICKET_COL}". '
                 f"Columnas encontradas: {headers}"
             )
-        return cls(path, headers[1:], rows)
+        fields = [h for h in headers if h != TICKET_COL]
+        return cls(path, fields, rows, columns=headers)
 
     @staticmethod
     def read_raw(path):
@@ -167,7 +187,7 @@ class Rifa:
 
     def save(self):
         with open(self.path, "w", newline="", encoding="utf-8-sig") as fh:
-            writer = csv.DictWriter(fh, fieldnames=[TICKET_COL] + self.fields)
+            writer = csv.DictWriter(fh, fieldnames=self.columns)
             writer.writeheader()
             writer.writerows(self.rows)
 
@@ -286,6 +306,14 @@ class App(tk.Tk):
         self.style.map("Treeview",
                        background=[("selected", p["accent"])],
                        foreground=[("selected", p["accent_fg"])])
+        self.style.configure("TCombobox", background=p["bg2"],
+                             foreground=p["text"], arrowcolor=p["subtext"],
+                             bordercolor=p["border"])
+        self.style.map("TCombobox",
+                       fieldbackground=[("readonly", p["entry_bg"])],
+                       foreground=[("readonly", p["text"])],
+                       selectbackground=[("readonly", p["entry_bg"])],
+                       selectforeground=[("readonly", p["text"])])
         for orient in ("Vertical", "Horizontal"):
             self.style.configure(f"{orient}.TScrollbar", background=p["bg2"],
                                  troughcolor=p["bg"], bordercolor=p["bg"],
@@ -433,9 +461,9 @@ class App(tk.Tk):
         self.label(card, "Importar CSV existente", size=14, bold=True,
                    bg=p["surface"]).pack(anchor="w")
         self.label(card,
-                   f'Este archivo no tiene la columna "{TICKET_COL}" al '
-                   "inicio. Elige cuál columna contiene el número de boleto, "
-                   "o genera los números automáticamente:",
+                   f'Este archivo no tiene una columna "{TICKET_COL}". '
+                   "Elige cuál columna contiene el número de boleto, o "
+                   "añade la columna con números nuevos:",
                    color=p["subtext"], bg=p["surface"], wraplength=460,
                    justify="left").pack(anchor="w", pady=(4, 12))
 
@@ -453,12 +481,72 @@ class App(tk.Tk):
         for h in headers:
             example = sample.get(h, "")
             radio(f'{h}   (ej: "{example}")' if example else h, h)
-        radio("✨ Ninguna: generar números automáticamente (1, 2, 3, …)",
+        radio("✨ Ninguna: añadir la columna de boletos con números nuevos",
               "__auto__")
 
+        # opciones al generar la columna: rango de números y posición
+        auto_frame = tk.Frame(card, bg=p["surface"], padx=22)
+        line1 = tk.Frame(auto_frame, bg=p["surface"])
+        line1.pack(anchor="w", pady=(6, 2))
+        self.label(line1, "Numerar del:", bg=p["surface"]).pack(side="left")
+        imp_start = tk.StringVar(value="1")
+        self.entry(line1, imp_start, width=7).pack(side="left", padx=(6, 12))
+        self.label(line1, "al:", bg=p["surface"]).pack(side="left")
+        imp_end = tk.StringVar(value=str(max(len(rows), 1)))
+        self.entry(line1, imp_end, width=7).pack(side="left", padx=(6, 0))
+        self.label(auto_frame,
+                   f"El archivo tiene {len(rows)} filas con datos; los "
+                   "números que sobren del rango quedan como boletos vacíos.",
+                   color=p["subtext"], bg=p["surface"], wraplength=430,
+                   justify="left").pack(anchor="w", pady=(0, 6))
+        line2 = tk.Frame(auto_frame, bg=p["surface"])
+        line2.pack(anchor="w", pady=(0, 2))
+        self.label(line2, "Posición de la columna:",
+                   bg=p["surface"]).pack(side="left")
+        positions = ["Al inicio (primera columna)"] + \
+                    [f'Después de "{h}"' for h in headers]
+        pos_combo = ttk.Combobox(line2, values=positions, state="readonly",
+                                 width=30)
+        pos_combo.current(0)
+        pos_combo.pack(side="left", padx=(6, 0))
+
+        actions = tk.Frame(card, bg=p["surface"])
+
+        def on_choice(*_args):
+            if choice.get() == "__auto__":
+                auto_frame.pack(fill="x", before=actions)
+            else:
+                auto_frame.pack_forget()
+
+        choice.trace_add("write", on_choice)
+
         def confirm():
-            ticket_col = None if choice.get() == "__auto__" else choice.get()
-            fields, new_rows = adapt_csv(headers, rows, ticket_col)
+            if choice.get() == "__auto__":
+                try:
+                    start = int(imp_start.get())
+                    end = int(imp_end.get())
+                except ValueError:
+                    messagebox.showwarning(
+                        "Rango inválido",
+                        "Escribe números válidos para el rango.", parent=dlg)
+                    return
+                if end < start:
+                    messagebox.showwarning(
+                        "Rango inválido",
+                        "El número final debe ser mayor o igual al inicial.",
+                        parent=dlg)
+                    return
+                try:
+                    fields, new_rows, columns = adapt_csv(
+                        headers, rows, None, start=start, end=end,
+                        insert_at=pos_combo.current())
+                except ValueError as exc:
+                    messagebox.showwarning("Rango insuficiente", str(exc),
+                                           parent=dlg)
+                    return
+            else:
+                fields, new_rows, columns = adapt_csv(headers, rows,
+                                                      choice.get())
             if not fields:
                 messagebox.showwarning(
                     "Sin campos",
@@ -473,7 +561,7 @@ class App(tk.Tk):
                 filetypes=[("Archivos CSV", "*.csv")])
             if not dest:
                 return
-            rifa = Rifa(dest, fields, new_rows)
+            rifa = Rifa(dest, fields, new_rows, columns=columns)
             try:
                 rifa.save()
             except Exception as exc:
@@ -484,7 +572,6 @@ class App(tk.Tk):
             dlg.destroy()
             self._show_rifa()
 
-        actions = tk.Frame(card, bg=p["surface"])
         actions.pack(anchor="w", pady=(14, 0))
         self.button(actions, "Importar 📥", confirm,
                     kind="accent").pack(side="left")
@@ -495,6 +582,8 @@ class App(tk.Tk):
         self._import_dialog = dlg
         self._import_choice = choice
         self._import_confirm = confirm
+        self._import_range = (imp_start, imp_end)
+        self._import_position = pos_combo
 
     # ------------------------------------------------------------- nueva rifa
     def build_new(self):
@@ -774,7 +863,7 @@ class App(tk.Tk):
 
         frame = tk.Frame(self.tab_body, bg=p["border"], padx=1, pady=1)
         frame.pack(fill="both", expand=True, pady=(0, 10))
-        cols = [TICKET_COL] + self.rifa.fields
+        cols = self.rifa.columns
         tree = ttk.Treeview(frame, columns=cols, show="headings")
         vsb = ttk.Scrollbar(frame, orient="vertical", command=tree.yview)
         hsb = ttk.Scrollbar(frame, orient="horizontal", command=tree.xview)

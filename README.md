@@ -24,8 +24,11 @@ también en Excel o Google Sheets.
   llenándolo otro día.
 - **Importar un CSV que ya tenías**: si abres un CSV con otro formato (por
   ejemplo hecho en Excel), un asistente te pregunta cuál columna contiene el
-  número de boleto — o genera los números automáticamente — y lo adapta para
-  usarlo en la app, guardándolo donde tú elijas.
+  número de boleto. Si el archivo no tiene números de boleto, la app **añade
+  la columna por ti**: tú eliges el rango de números (ej. del 100 al 150) y
+  en qué posición insertar la columna; si el rango es más grande que las
+  filas, los números sobrantes quedan como boletos vacíos por vender. El
+  archivo adaptado se guarda donde tú elijas.
 
 ## Requisitos
 
@@ -48,7 +51,8 @@ también en Excel o Google Sheets.
 
 ## Formato del CSV
 
-La primera columna siempre es `Boleto` y el resto son los campos que definiste:
+Debe existir una columna `Boleto` (en cualquier posición; las rifas creadas
+por la app la ponen al inicio) y el resto son los campos que definiste:
 
 ```csv
 Boleto,Nombre,Teléfono,Método de pago
