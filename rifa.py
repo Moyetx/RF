@@ -76,6 +76,37 @@ def compress_numbers(nums):
     return ", ".join(parts)
 
 
+def adapt_csv(headers, rows, ticket_col=None):
+    """Convierte un CSV arbitrario al formato de rifa.
+
+    ticket_col: nombre de la columna que contiene el número de boleto, o
+    None para generar los números automáticamente (1, 2, 3, …).
+    Regresa (campos, filas) listos para construir una Rifa.
+    """
+    def rename(h):
+        # una columna llamada "Boleto" que no sea la elegida chocaría con
+        # la columna automática; se conserva con otro nombre
+        return f"{h} (original)" if h == TICKET_COL else h
+
+    if ticket_col is None:
+        fields = [rename(h) for h in headers]
+        new_rows = [{TICKET_COL: str(i),
+                     **{rename(h): row.get(h, "") for h in headers}}
+                    for i, row in enumerate(rows, start=1)]
+        return fields, new_rows
+
+    fields = [rename(h) for h in headers if h != ticket_col]
+    new_rows = [{TICKET_COL: row.get(ticket_col, ""),
+                 **{rename(h): row.get(h, "")
+                    for h in headers if h != ticket_col}}
+                for row in rows]
+    try:
+        new_rows.sort(key=lambda r: int(r[TICKET_COL]))
+    except ValueError:
+        pass  # boletos no numéricos: se conserva el orden original
+    return fields, new_rows
+
+
 class Rifa:
     """Modelo de datos: una rifa respaldada por un archivo CSV."""
 
@@ -98,18 +129,41 @@ class Rifa:
 
     @classmethod
     def load(cls, path):
+        headers, rows = cls.read_raw(path)
+        if headers[0] != TICKET_COL:
+            raise ValueError(
+                f'El CSV debe tener "{TICKET_COL}" como primera columna. '
+                f"Columnas encontradas: {headers}"
+            )
+        return cls(path, headers[1:], rows)
+
+    @staticmethod
+    def read_raw(path):
+        """Lee cualquier CSV: regresa (encabezados, filas como dicts).
+
+        No exige el formato de rifa; sirve para el asistente de importación.
+        Encabezados duplicados se renombran con un sufijo numérico.
+        """
         with open(path, newline="", encoding="utf-8-sig") as fh:
-            reader = csv.DictReader(fh)
-            headers = reader.fieldnames or []
-            if not headers or headers[0] != TICKET_COL:
-                raise ValueError(
-                    f'El CSV debe tener "{TICKET_COL}" como primera columna. '
-                    f"Columnas encontradas: {headers}"
-                )
-            fields = headers[1:]
-            rows = [{h: (row.get(h) or "").strip() for h in headers}
-                    for row in reader]
-        return cls(path, fields, rows)
+            raw = list(csv.reader(fh))
+        if not raw or not any(h.strip() for h in raw[0]):
+            raise ValueError("El archivo está vacío o no tiene encabezados.")
+        seen, headers = {}, []
+        for h in raw[0]:
+            h = h.strip() or "Columna"
+            if h in seen:
+                seen[h] += 1
+                h = f"{h} ({seen[h]})"
+            else:
+                seen[h] = 1
+            headers.append(h)
+        rows = []
+        for line in raw[1:]:
+            if not any(cell.strip() for cell in line):
+                continue
+            rows.append({h: (line[i].strip() if i < len(line) else "")
+                         for i, h in enumerate(headers)})
+        return headers, rows
 
     def save(self):
         with open(self.path, "w", newline="", encoding="utf-8-sig") as fh:
@@ -344,14 +398,103 @@ class App(tk.Tk):
             return
         try:
             self.rifa = Rifa.load(path)
+        except ValueError:
+            # CSV existente con otro formato: asistente de importación
+            self.import_wizard(path)
+            return
         except Exception as exc:
             messagebox.showerror("No se pudo abrir", str(exc))
             return
+        self._show_rifa()
+
+    def _show_rifa(self):
         self.capturing = False
         self.capture_index = None
         self.current_view = "rifa"
         self.current_tab = "captura"
         self.render()
+
+    # -------------------------------------------------- asistente de import.
+    def import_wizard(self, path):
+        try:
+            headers, rows = Rifa.read_raw(path)
+        except Exception as exc:
+            messagebox.showerror("No se pudo abrir", str(exc))
+            return
+        p = self.palette
+        dlg = tk.Toplevel(self)
+        dlg.title("Importar CSV existente")
+        dlg.configure(bg=p["bg"])
+        dlg.transient(self)
+        dlg.grab_set()
+        outer, card = self.card(dlg)
+        outer.pack(padx=16, pady=16, fill="both", expand=True)
+
+        self.label(card, "Importar CSV existente", size=14, bold=True,
+                   bg=p["surface"]).pack(anchor="w")
+        self.label(card,
+                   f'Este archivo no tiene la columna "{TICKET_COL}" al '
+                   "inicio. Elige cuál columna contiene el número de boleto, "
+                   "o genera los números automáticamente:",
+                   color=p["subtext"], bg=p["surface"], wraplength=460,
+                   justify="left").pack(anchor="w", pady=(4, 12))
+
+        choice = tk.StringVar(value=headers[0])
+        sample = rows[0] if rows else {}
+
+        def radio(text, value):
+            tk.Radiobutton(card, text=text, variable=choice, value=value,
+                           bg=p["surface"], fg=p["text"],
+                           selectcolor=p["entry_bg"],
+                           activebackground=p["surface"],
+                           activeforeground=p["text"], anchor="w",
+                           font=("TkDefaultFont", 10)).pack(fill="x", pady=1)
+
+        for h in headers:
+            example = sample.get(h, "")
+            radio(f'{h}   (ej: "{example}")' if example else h, h)
+        radio("✨ Ninguna: generar números automáticamente (1, 2, 3, …)",
+              "__auto__")
+
+        def confirm():
+            ticket_col = None if choice.get() == "__auto__" else choice.get()
+            fields, new_rows = adapt_csv(headers, rows, ticket_col)
+            if not fields:
+                messagebox.showwarning(
+                    "Sin campos",
+                    "El CSV solo tiene la columna del boleto; se necesita "
+                    "al menos otra columna con datos.", parent=dlg)
+                return
+            dest = filedialog.asksaveasfilename(
+                parent=dlg, title="Guardar rifa adaptada como",
+                defaultextension=".csv",
+                initialfile=os.path.basename(path),
+                initialdir=os.path.dirname(path) or ".",
+                filetypes=[("Archivos CSV", "*.csv")])
+            if not dest:
+                return
+            rifa = Rifa(dest, fields, new_rows)
+            try:
+                rifa.save()
+            except Exception as exc:
+                messagebox.showerror("No se pudo guardar", str(exc),
+                                     parent=dlg)
+                return
+            self.rifa = rifa
+            dlg.destroy()
+            self._show_rifa()
+
+        actions = tk.Frame(card, bg=p["surface"])
+        actions.pack(anchor="w", pady=(14, 0))
+        self.button(actions, "Importar 📥", confirm,
+                    kind="accent").pack(side="left")
+        self.button(actions, "Cancelar", dlg.destroy,
+                    kind="ghost").pack(side="left", padx=8)
+
+        # referencias para pruebas automatizadas
+        self._import_dialog = dlg
+        self._import_choice = choice
+        self._import_confirm = confirm
 
     # ------------------------------------------------------------- nueva rifa
     def build_new(self):
@@ -474,11 +617,7 @@ class App(tk.Tk):
         except Exception as exc:
             messagebox.showerror("No se pudo crear", str(exc))
             return
-        self.capturing = False
-        self.capture_index = None
-        self.current_view = "rifa"
-        self.current_tab = "captura"
-        self.render()
+        self._show_rifa()
 
     # ---------------------------------------------------------- vista de rifa
     def build_rifa_view(self):

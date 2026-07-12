@@ -22,6 +22,10 @@ también en Excel o Google Sheets.
   los números repetidos se omiten solos.
 - **Abrir rifa existente**: retoma cualquier CSV creado por la app para seguir
   llenándolo otro día.
+- **Importar un CSV que ya tenías**: si abres un CSV con otro formato (por
+  ejemplo hecho en Excel), un asistente te pregunta cuál columna contiene el
+  número de boleto — o genera los números automáticamente — y lo adapta para
+  usarlo en la app, guardándolo donde tú elijas.
 
 ## Requisitos
 
