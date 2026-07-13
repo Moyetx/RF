@@ -20,6 +20,10 @@ también en Excel o Google Sheets.
   **cuáles faltan** (compactadas, ej. `1-3, 5, 7-20`).
 - **Agregar más números**: amplía la rifa con más boletos cuando lo necesites;
   los números repetidos se omiten solos.
+- **Agregar campos nuevos**: añade otra columna a una rifa ya empezada (por
+  ejemplo "Pagado"). Si hay boletos ya llenos a los que les falta el campo
+  nuevo, la app te avisa cuáles son y te ofrece completarlos ahí mismo, uno
+  por uno — el aviso aplica solo a la columna recién añadida.
 - **Abrir rifa existente**: retoma cualquier CSV creado por la app para seguir
   llenándolo otro día.
 - **Importar un CSV que ya tenías**: si abres un CSV con otro formato (por

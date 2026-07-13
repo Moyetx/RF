@@ -233,6 +233,19 @@ class Rifa:
                 return i
         return None
 
+    def add_field(self, name):
+        """Añade una columna nueva (vacía en todas las filas) y guarda."""
+        self.fields.append(name)
+        self.columns.append(name)
+        for row in self.rows:
+            row[name] = ""
+        self.save()
+
+    def missing_field_indexes(self, field):
+        """Índices de boletos ya llenos a los que les falta `field`."""
+        return [i for i, row in enumerate(self.rows)
+                if self.is_filled(row) and not row.get(field, "").strip()]
+
     def add_range(self, start, end):
         existing = set(self.numeric_tickets())
         added = 0
@@ -263,6 +276,7 @@ class App(tk.Tk):
         self.rifa = None
         self.capturing = False
         self.capture_index = None
+        self.capture_queue = None     # cola de índices al completar un campo nuevo
         self.current_view = "home"     # home | new | rifa
         self.current_tab = "captura"   # captura | vista | resumen | agregar
         self._capture_backup = None    # valores del formulario al cambiar tema
@@ -438,6 +452,7 @@ class App(tk.Tk):
     def _show_rifa(self):
         self.capturing = False
         self.capture_index = None
+        self.capture_queue = None
         self.current_view = "rifa"
         self.current_tab = "captura"
         self.render()
@@ -714,7 +729,7 @@ class App(tk.Tk):
         tabs = tk.Frame(self.container, bg=p["bg"], padx=16, pady=10)
         tabs.pack(fill="x")
         options = [("captura", "📝 Captura"), ("vista", "📄 Vista CSV"),
-                   ("resumen", "📊 Resumen"), ("agregar", "➕ Agregar boletos")]
+                   ("resumen", "📊 Resumen"), ("agregar", "➕ Agregar")]
         for key, text in options:
             kind = "accent" if key == self.current_tab else "ghost"
             self.button(tabs, text, lambda k=key: self.switch_tab(k),
@@ -760,8 +775,13 @@ class App(tk.Tk):
         row = self.rifa.rows[self.capture_index]
         self.label(card, f"Boleto  #{row[TICKET_COL]}", size=18, bold=True,
                    bg=p["surface"], color=p["accent"]).pack(anchor="w")
-        self.label(card, f"Vacíos restantes: {empty} de {total}",
-                   color=p["subtext"], bg=p["surface"]).pack(anchor="w", pady=(0, 10))
+        if self.capture_queue is not None:
+            status = ("Completando boletos pendientes; faltan "
+                      f"{len(self.capture_queue) + 1} en la lista")
+        else:
+            status = f"Vacíos restantes: {empty} de {total}"
+        self.label(card, status, color=p["subtext"],
+                   bg=p["surface"]).pack(anchor="w", pady=(0, 10))
 
         form = tk.Frame(card, bg=p["surface"])
         form.pack(anchor="w", fill="x")
@@ -809,11 +829,22 @@ class App(tk.Tk):
         self.current_tab = "captura"
         self.render()
 
+    def start_queue_capture(self, indexes):
+        """Ciclo de captura sobre una lista específica de boletos."""
+        if not indexes:
+            return
+        self.capture_queue = list(indexes[1:])
+        self.capturing = True
+        self.capture_index = indexes[0]
+        self.current_tab = "captura"
+        self.render()
+
     def stop_capture(self, save_current=False):
         if save_current and self.capturing:
             self._store_form_into_row()
         self.capturing = False
         self.capture_index = None
+        self.capture_queue = None
         self._capture_backup = None
         self.unbind("<Return>")
         if self.current_view == "rifa":
@@ -835,6 +866,16 @@ class App(tk.Tk):
                 "Llena al menos un campo, o usa «Omitir» para saltarlo.")
             return
         self._store_form_into_row()
+        if self.capture_queue is not None:
+            if self.capture_queue:
+                self.capture_index = self.capture_queue.pop(0)
+                self.render()
+            else:
+                self.stop_capture()
+                messagebox.showinfo(
+                    "Pendientes completados",
+                    "Terminaste de completar los boletos pendientes. ✅")
+            return
         nxt = self.rifa.next_empty_index(after=self.capture_index)
         if nxt is None:
             self.stop_capture()
@@ -845,6 +886,14 @@ class App(tk.Tk):
         self.render()
 
     def skip_ticket(self):
+        if self.capture_queue is not None:
+            if not self.capture_queue:
+                messagebox.showinfo("Sin más boletos",
+                                    "No hay otro boleto pendiente al cual saltar.")
+                return
+            self.capture_index = self.capture_queue.pop(0)
+            self.render()
+            return
         nxt = self.rifa.next_empty_index(after=self.capture_index)
         if nxt is None or nxt == self.capture_index:
             messagebox.showinfo("Sin más boletos",
@@ -959,6 +1008,27 @@ class App(tk.Tk):
                     kind="accent").grid(row=3, column=0, columnspan=4,
                                         sticky="w", pady=(16, 0))
 
+        outer2, card2 = self.card(self.tab_body)
+        outer2.pack(pady=6, anchor="w", fill="x")
+        self.label(card2, "Agregar un campo nuevo (columna)", size=14,
+                   bold=True, bg=p["surface"]).grid(
+            row=0, column=0, columnspan=2, sticky="w", pady=(0, 4))
+        self.label(card2,
+                   "La columna se añade a todos los boletos. Si hay boletos "
+                   "ya llenos, te avisaré cuáles les falta este campo para "
+                   "que los completes.",
+                   color=p["subtext"], bg=p["surface"], wraplength=560,
+                   justify="left").grid(row=1, column=0, columnspan=2,
+                                        sticky="w", pady=(0, 12))
+        self.label(card2, "Nombre del campo:", bg=p["surface"]).grid(
+            row=2, column=0, sticky="w")
+        self.add_field_name = tk.StringVar()
+        self.entry(card2, self.add_field_name, width=28).grid(
+            row=2, column=1, sticky="w", padx=(8, 0))
+        self.button(card2, "➕ Agregar campo", self.do_add_field,
+                    kind="accent").grid(row=3, column=0, columnspan=2,
+                                        sticky="w", pady=(16, 0))
+
     def do_add_tickets(self):
         try:
             start = int(self.add_start.get())
@@ -979,6 +1049,41 @@ class App(tk.Tk):
             messagebox.showinfo("Sin cambios",
                                 "Todos los números de ese rango ya existían.")
         self.render()
+
+    def do_add_field(self):
+        name = self.add_field_name.get().strip()
+        if not name:
+            messagebox.showwarning("Falta el nombre",
+                                   "Escribe el nombre del campo nuevo.")
+            return
+        if name in self.rifa.columns:
+            messagebox.showwarning(
+                "Campo repetido",
+                f'La rifa ya tiene una columna llamada "{name}".')
+            return
+        self.rifa.add_field(name)
+        pending = self.rifa.missing_field_indexes(name)
+        if not pending:
+            messagebox.showinfo(
+                "Campo agregado",
+                f'Se agregó la columna "{name}" a todos los boletos.')
+            self.render()
+            return
+        tickets = [self.rifa.rows[i][TICKET_COL] for i in pending]
+        try:
+            listado = compress_numbers([int(t) for t in tickets])
+        except ValueError:
+            listado = ", ".join(tickets)
+        fill_now = messagebox.askyesno(
+            "Boletos por completar",
+            f'Se agregó la columna "{name}".\n\n'
+            f"⚠ A {len(pending)} boleto(s) ya llenos les falta este campo:\n"
+            f"{listado}\n\n"
+            "¿Quieres completarlos ahora, uno por uno?")
+        if fill_now:
+            self.start_queue_capture(pending)
+        else:
+            self.render()
 
 
 def main():
